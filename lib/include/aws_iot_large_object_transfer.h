@@ -30,6 +30,7 @@
 #define AWS_IOT_LARGE_OBJECT_TRANSFER_H_
 
 #include <stdint.h>
+#include <stddef.h>
 
 /**
  * @brief Types of events handled within a large object transfer session.
@@ -76,11 +77,12 @@ typedef enum AwsIotLargeObjectTransferError
 typedef struct AwsIotLargeObjectTransferParams
 {
     uint32_t bitmap;                  //!< bitmap 32-bit Bitmap contains all the enabled options.
+    uint32_t objectSize;              //!< objectSize Size of the large object.
     uint16_t blockSize;               //!< blockSize Size of each block for the transfer.
     uint16_t windowSize;              //!< windowSize Number of blocks which can be transferred at once without receiving an acknowledgement.
     uint16_t timeoutMilliseconds;     //!< timeoutMilliseconds Timeout in milliseconds for one window of transfer.
     uint16_t numRetransmission;       //!< numRetransmission Number of retransmissions.
-    uint32_t sessionRetention;        //!< sessionRetention Session retention time in milliseconds.
+    uint32_t sessionTimeout;          //!< sessionTimeout Session timeout in milliseconds.
 
 } AwsIotLargeObjectTransferParams_t;
 
@@ -131,6 +133,9 @@ typedef void ( *AwsIotLargeObjectTransferEventCallback_t ) (
         AwsIotLargeObjectTransferHandle_t handle,
         AwsIotLargeObjectTransferEvent_t eventCode );
 
+/**
+ * @brief Callback invoked for each of the blocks of large object received.
+ */
 typedef void ( *AwsIotLargeObjectReceiveCallback_t ) (
         AwsIotLargeObjectTransferHandle_t handle,
         size_t offset,
@@ -157,8 +162,7 @@ AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Create(
 AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Send(
         AwsIotLargeObjectTransferHandle_t handle,
         const uint8_t* pObject,
-        size_t objectSize,
-        AwsIotLargeObjectTransferParams_t *pParams );
+        AwsIotLargeObjectTransferParams_t *pObjectParams );
 
 /**
  * @brief Starts receiving large object from a peer.
@@ -169,7 +173,7 @@ AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Send(
 AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Receive(
         AwsIotLargeObjectTransferHandle_t handle,
         AwsIotLargeObjectReceiveCallback_t receiveCallback,
-        AwsIotLargeObjectTransferParams_t *pParams );
+        AwsIotLargeObjectTransferParams_t *pObjectParams );
 
 /**
  * @brief Sets the metadata for an ongoing large object transfer session.
