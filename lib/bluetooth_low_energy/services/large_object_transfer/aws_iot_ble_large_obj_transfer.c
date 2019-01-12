@@ -30,6 +30,7 @@
 #include "FreeRTOS.h"
 #include "aws_iot_large_object_transfer.h"
 #include "aws_iot_serializer.h"
+#include "private/aws_ble_service_internals.h"
 #include "FreeRTOS_POSIX/time.h"
 
 static uint16_t usUUID = 0;
@@ -88,14 +89,17 @@ typedef struct _largeObjectSession
 } _largeObjectSession_t;
 
 
-static BaseType_t prxSerializeSTARTMessage( _largeObjectSendSession_t* pxSendSession )
+static BaseType_t prxSerializeSTARTMessage( _largeObjectSendSession_t* pxSendSession, uint8_t *pucBuffer, size_t* pxLength )
 {
     BaseType_t xRet = pdFALSE;
     AwsIotSerializerEncoderObject_t xEncoder = AWS_IOT_SERIALIZER_ENCODER_CONTAINER_INITIALIZER_STREAM;
     AwsIotSerializerEncoderObject_t xContainer = AWS_IOT_SERIALIZER_ENCODER_CONTAINER_INITIALIZER_MAP;
     AwsIotSerializerScalarData_t xData = { 0 };
+    AwsIotSerializerError_t xError = AWS_IOT_SERIALIZER_SUCCESS;
 
-    bleEncode
+    xError = bleMESSAGE_ENCODER.init( &xEncoder, pucBuffer, pxLength );
+
+
 
 
 }
