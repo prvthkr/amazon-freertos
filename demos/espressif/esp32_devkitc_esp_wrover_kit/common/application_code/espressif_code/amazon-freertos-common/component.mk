@@ -27,6 +27,7 @@ COMPONENT_SRCDIRS := $(AMAZON_FREERTOS_LIB_DIR)/mqtt \
         $(AMAZON_FREERTOS_LIB_DIR)/bluetooth_low_energy/services/device_information \
         $(AMAZON_FREERTOS_LIB_DIR)/bluetooth_low_energy/services/mqtt_ble \
         $(AMAZON_FREERTOS_LIB_DIR)/bluetooth_low_energy/services/wifi_provisioning \
+        $(AMAZON_FREERTOS_LIB_DIR)/bluetooth_low_energy/services/large_object_transfer \
         $(AMAZON_FREERTOS_LIB_DIR)/serializer/json \
         $(AMAZON_FREERTOS_LIB_DIR)/serializer/cbor \
         $(AMAZON_FREERTOS_LIB_DIR)/third_party/jsmn \
