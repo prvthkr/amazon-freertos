@@ -32,40 +32,28 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/**
- * @brief Events supported within a large object transfer session.
- */
-typedef enum AwsIotLargeObjectTransferEvent
-{
-    AWS_IOT_LARGE_OBJECT_TRANSFER_SEND_COMPLETE = 0,  //!< AWS_IOT_LARGE_OBJECT_TRANSFER_COMPLETE  Event indicates the completion of a large object send session.
-    AWS_IOT_LARGE_OBJECT_TRANSFER_SEND_FAILED,        //!< AWS_IOT_LARGE_OBJECT_TRANSFER_SEND_FAILED Event indicates a send session has failed and cannot be resumed.
-    AWS_IOT_LARGE_OBJECT_TRANSFER_SEND_TIMEDOUT,      //!< AWS_IOT_LARGE_OBJECT_TRANSFER_SEND_TIMEDOUT Event indicates a send session is timedout.
-    AWS_IOT_LARGE_OBJECT_TRANSFER_RECEIVE,            //!< AWS_IOT_LARGE_OBJECT_TRANSFER_RECEIVE  Event indicates that a new large object is received
-    AWS_IOT_LARGE_OBJECT_TRANSFER_RECV_FAILED,        //!< AWS_IOT_LARGE_OBJECT_TRANSFER_RECV_FAILED Event indicates a receive session has failed or aborted by peer.
-
-} AwsIotLargeObjectTransferEvent_t;
 
 /**
- * @brief Error types returned by the large object transfer APIs.
+ * @brief Error code returned by the large object transfer APIs.
  */
 typedef enum AwsIotLargeObjectTransferError
 {
-    AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS = 0,          //!< AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS API is successful.
-    AWS_IOT_LARGE_OBJECT_TRANSFER_INVALID_PARAM,        //!< AWS_IOT_LARGE_OBJECT_TRANSFER_INVALID_PARAM API failed due to an invalid param as input.
-    AWS_IOT_LARGE_OBJECT_TRANSFER_SESSION_IN_PROGRESS,  //!< AWS_IOT_LARGE_OBJECT_TRANSFER_SESSION_IN_PROGRESS  API failed as there is already a session in progress.
-    AWS_IOT_LARGE_OBJECT_TRANSFER_SESSION_NOT_FOUND,
-    AWS_IOT_LARGE_OBJECT_TRANSFER_NO_MEMORY,            //!< AWS_IOT_LARGE_OBJECT_TRANSFER_NO_MEMORY API failed as there is no enough memory for allocation.
-    AWS_IOT_LARGE_OBJECT_TRANSFER_BUFFER_TOO_SMALL,     //!< AWS_IOT_LARGE_OBJECT_TRANSFER_BUFFER_TOO_SMALL API failed as the input buffer provided by the user was too small.
-    AWS_IOT_LARGE_OBJECT_TRANSFER_NETWORK_ERROR,        //!< AWS_IOT_LARGE_OBJECT_TRANSFER_NETWORK_ERROR Large Object transfer failed due to network error.
-    AWS_IOT_LARGE_OBJECT_TRANSFER_INTERNAL_ERROR        //!< AWS_IOT_LARGE_OBJECT_TRANSFER_INTERNAL_ERROR API failed due to an internal error.
+    eAwsIotLargeObjectTransferSuccess = 0,
+    eAwsIotLargeObjectTransferSessionNotFound,
+    eAwsIotLargeObjectTransferSessionFound,
+    eAwsIotLargeObjectTransferSessionAborted,
+    eAwsIotLargeObjectTransferSessionTimedOut,
+    eAwsIotLargeObjectTransferInvalidParam,
+    eAwsIotLargeObjectTransferNoMemory,
+    eAwsIotLargeObjectTransferNetworkError,
+    eAwsIotLargeObjectTransferInternalError
 } AwsIotLargeObjectTransferError_t ;
 
-
-
-/**
- * @brief Maximum window size supported for large object transfer.
- */
-#define largeObjTransferMAX_WINDOW_SIZE                  ( 32768 )
+typedef enum AwsIotLargeObjectTransferStatus
+{
+    eAwsIotLargeObjectTransferStart = 0,
+    eAwsIotLargeObjectTransferComplete
+} AwsIotLargeObjectTransferStatus_t;
 
 /**
  * @brief Keys for control message for large object transfer.
@@ -78,6 +66,7 @@ typedef enum AwsIotLargeObjectTransferError
 #define largeObjTransferTIMEOUT_KEY             "t"
 #define largeObjTransferNUM_RERTANS_KEY         "r"
 #define largeObjTransferSESSION_EXPIRY_KEY      "x"
+#define largeObjTransferERROR_CODE_KEY          "e"
 
 /**
  * @brief Message types exchanged for large object transfer.
@@ -88,18 +77,22 @@ typedef enum AwsIotLargeObjectTransferError
 #define largeObjTransferMESSAGE_TYPE_UPDATE  ( 0x4 )
 #define largeObjTransferMESSAGE_TYPE_ACK     ( 0x5 )
 
+/**
+ * @brief Maximum window size supported for large object transfer.
+ */
+#define largeObjTransferMAX_WINDOW_SIZE        ( 32768 )
+
 
 /**
  * @brief Number of parameters for START Message.
  */
-#define largeObjTransferNUM_START_MESSAGE_PARAMS                  ( 8 )
+#define largeObjTransferNUM_START_MESSAGE_PARAMS   ( 8 )
 
 /**
  * @brief Parameters used for large object transfer.
  */
 typedef struct AwsIotLargeObjectTransferParams
 {
-    uint32_t objectSize;                 //!< objectSize Size of the large object.
     uint16_t blockSize;                  //!< blockSize Size of each block for the transfer.
     uint16_t windowSize;                 //!< windowSize Number of blocks which can be transferred at once without receiving an acknowledgement.
     uint16_t timeoutMilliseconds;        //!< timeoutMilliseconds Timeout in milliseconds for one window of transfer.
@@ -108,16 +101,15 @@ typedef struct AwsIotLargeObjectTransferParams
 } AwsIotLargeObjectTransferParams_t;
 
 /**
- * @brief Callback used to receive bytes from a physical network.
+ * @brief Callback used to receive bytes of maximum MTU size from a physical network.
+ * Returns pdFALSE if message is incomplete. Caller needs to invoke the function again with the complete message.
+ *         pdTRUE if the message parsing is complete.
  *
  */
-typedef int32_t ( * AwsIotLargeObjectNetworkReceiveCallback_t )(
-        void * pvRecvContext,
+typedef BaseType_t ( * AwsIotLargeObjectTransferNetworkRecvCallback_t ) (
+        void * pvContext,
         const void * pvReceivedData,
-        size_t xOffset,
-        size_t xDataLength,
-        void ( *freeReceivedData )( void * )
-);
+        size_t xDataLength );
 
 /**
  * @brief Structure which wraps the underlying network stack for the large object transfer.
@@ -126,17 +118,19 @@ typedef int32_t ( * AwsIotLargeObjectNetworkReceiveCallback_t )(
  */
 typedef struct AwsIotLargeObjectNetworkIface
 {
-    /** Pointer to network Connection **/
-    void * pvNetworkConnection;
+    void *pvConnection;
+
 
     /** Function pointer to send data over a network connection **/
-    size_t ( * send )( void *pvNetworkConnection, const void * const pvMessage , size_t xLength );
+    size_t ( * send )( void * pvConnection,
+            const void * const pvMessage ,
+            size_t xLength );
 
     /** Function pointer to set the network receive callback **/
     int32_t ( * set_receive_callback )(
-            void* pvNetworkConnection,
+            void * pvConnection,
             void* pvRecvContext,
-            AwsIotLargeObjectNetworkReceiveCallback_t xNetworkReceiveCb );
+            AwsIotLargeObjectTransferNetworkRecvCallback_t xNetworkReceiveCb );
 
 } AwsIotLargeObjectNetworkIface_t;
 
@@ -148,25 +142,27 @@ typedef void * AwsIotLargeObjectTransferSession_t;
 /**
  * @brief Callback used to receive events from large object transfer.
  */
-typedef void ( *AwsIotLargeObjectTransferEventCallback_t ) ( AwsIotLargeObjectTransferSession_t xSession, AwsIotLargeObjectTransferEvent_t xEvent );
+typedef void ( *AwsIotLargeObjectTransferCallback_t )(
+        AwsIotLargeObjectTransferSession_t xSession,
+        AwsIotLargeObjectTransferStatus_t xStatus,
+        AwsIotLargeObjectTransferError_t xError );
 
 /**
  * @brief Callback invoked for each of the blocks of large object received.
  * Callback will be invoked multiple
  */
-typedef void ( *AwsIotLargeObjectReceiveCallback_t ) (
-        AwsIotLargeObjectTransferSession_t xSession,
-        size_t offset,
-        const uint8_t *pBlock,
-        size_t blockLength );
+typedef void ( *AwsIotLargeObjectDataReceiveCallback_t ) (
+        size_t xBlockOffset,
+        const uint8_t *pBlockData,
+        size_t xBlockLength,
+        size_t xTotalLength );
 
 /**
  * @brief Creates a new large object transfer session and saves the handle to the new session.
  *
  */
-AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_CreateSession(
+AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_CreateNewSession(
         AwsIotLargeObjectNetworkIface_t* pxNetworkInterface,
-        AwsIotLargeObjectTransferEventCallback_t xCallback,
         AwsIotLargeObjectTransferSession_t* pxSession );
 
 /**
@@ -176,7 +172,9 @@ AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_CreateSession(
 AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Send(
         AwsIotLargeObjectTransferSession_t xSession,
         const uint8_t* pucObject,
-        AwsIotLargeObjectTransferParams_t *pxParams );
+        size_t xSize,
+        AwsIotLargeObjectTransferParams_t *pxSendParams,
+        AwsIotLargeObjectTransferCallback_t xCallback );
 
 /**
  * @brief API invoked by the application to indicate its ready to receive a large object.
@@ -184,17 +182,19 @@ AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Send(
  * handled by the application using the receive callback.
  * This function should be called by the application only in response to a AWS_IOT_LARGE_OBJECT_TRANSFER_RECEIVE event notification.
  */
-AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Receive(
+AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_SetReceiveCallback(
         AwsIotLargeObjectTransferSession_t xSession,
-        AwsIotLargeObjectReceiveCallback_t xReceiveCb,
-        AwsIotLargeObjectTransferParams_t *pParams );
-
+        AwsIotLargeObjectTransferParams_t *pxReceiveParams,
+        AwsIotLargeObjectTransferCallback_t xCallback,
+        AwsIotLargeObjectDataReceiveCallback_t xDataCallback );
 /**
  * @brief Resumes a large object transfer session.
  * Only Sender can resume a previously timedout session. Failed or Aborted sessions cannot be resumed.
  *
  */
-AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_ResumeSession( AwsIotLargeObjectTransferSession_t xSession );
+AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_ResumeSession(
+        AwsIotLargeObjectTransferSession_t xSession,
+        AwsIotLargeObjectNetworkIface_t* pxNetworkInterface );
 
 /**
  * @brief Aborts a large object transfer session.
@@ -215,7 +215,11 @@ AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_DestroySession( AwsIo
  * Function sets the metadata locally and returns immediately.
  * The final negotiated metadata will be returned back in the AWS_IOT_LARGE_OBJECT_TRANSFER_METADATA_CHANGED event callback.
  */
-AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_SetSessionParams(
+AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_SetSendParams(
+        AwsIotLargeObjectTransferSession_t xSession,
+        AwsIotLargeObjectTransferParams_t* pParams );
+
+AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_SetReceiveParams(
         AwsIotLargeObjectTransferSession_t xSession,
         AwsIotLargeObjectTransferParams_t* pParams );
 
