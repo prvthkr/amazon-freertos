@@ -1,5 +1,5 @@
 /*
- * Amazon FreeRTOS V1.4.4
+ * Amazon FreeRTOS
  * Copyright (C) 2018 Amazon.com, Inc. or its affiliates.  All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
@@ -51,7 +51,7 @@
 #define democonfigTCP_ECHO_TASKS_SINGLE_TASK_PRIORITY      ( tskIDLE_PRIORITY + 5 )
 
 /* OTA Update task example parameters. */
-#define democonfigOTA_UPDATE_TASK_STACK_SIZE               ( 6 * configMINIMAL_STACK_SIZE )
+#define democonfigOTA_UPDATE_TASK_STACK_SIZE               ( 4 * configMINIMAL_STACK_SIZE )
 #define democonfigOTA_UPDATE_TASK_TASK_PRIORITY            ( tskIDLE_PRIORITY + 5 )
 
 /* Simple TCP Echo Server task example parameters */
@@ -65,10 +65,6 @@
 /* MQTT echo task example parameters. */
 #define democonfigMQTT_ECHO_TASK_STACK_SIZE                ( configMINIMAL_STACK_SIZE * 8 )
 #define democonfigMQTT_ECHO_TASK_PRIORITY                  ( tskIDLE_PRIORITY + 5 )
-
-/* Task stack size and priority of WIFI connectivity demo task. */
-#define democonfigWIFI_CONNECT_TASK_STACK_SIZE             ( configMINIMAL_STACK_SIZE * 4 )
-#define democonfigWIFI_CONNECT_TASK_PRIORITY               ( tskIDLE_PRIORITY + 5 )
 
 /* Timeout used when establishing a connection, which required TLS
 negotiation. */

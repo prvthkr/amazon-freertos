@@ -28,7 +28,7 @@
 #include "task.h"
 
 /* Demo includes */
-#include "aws_demo_runner.h"
+#include "aws_test_runner.h"
 
 /* AWS library includes. */
 #include "aws_system_init.h"
@@ -80,8 +80,8 @@
 #include "aws_iot_mqtt.h"
 
 #include <aws_ble.h>
-#include "aws_ble_numericComparison.h"
 #include "aws_iot_network_manager.h"
+#include "aws_ble_numericComparison.h"
 #include "SEGGER_RTT.h"
 #include "aws_application_version.h"
 #if defined( UART_PRESENT )
@@ -92,12 +92,15 @@
 #endif
 
 /* clang-format off */
+#define mainTEST_RUNNER_TASK_STACK_SIZE     ( configMINIMAL_STACK_SIZE * 12 )
 
 /* Logging Task Defines. */
 #define mainLOGGING_MESSAGE_QUEUE_LENGTH    ( 15 )
 #define mainLOGGING_TASK_STACK_SIZE         ( configMINIMAL_STACK_SIZE * 4 )
 
 /* BLE Lib defines. */
+#define mainBLE_DEVICE_NAME                 "nRF52840-dk"                               /**< Name of device. Will be included in the advertising data. */
+#define mainBLE_MTU                         ( NRF_SDH_BLE_GATT_MAX_MTU_SIZE );
 #define mainBLE_SERVER_UUID                 { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
 
 /* UART Buffer sizes. */
@@ -116,12 +119,7 @@
 
 SemaphoreHandle_t xUARTTxComplete;
 QueueHandle_t UARTqueue = NULL;
-const AppVersion32_t xAppFirmwareVersion =
-{
-    .u.x.ucMajor = APP_VERSION_MAJOR,
-    .u.x.ucMinor = APP_VERSION_MINOR,
-    .u.x.usBuild = APP_VERSION_BUILD,
-};
+
 /* clang-format on */
 
 /**
@@ -444,8 +442,13 @@ void vApplicationDaemonTaskStartupHook( void )
 
      	}
      }
-    /* Start the demo tasks. */
-    DEMO_RUNNER_RunDemos();
+
+    xTaskCreate( TEST_RUNNER_RunTests_task,
+            "RunTests_task",
+            mainTEST_RUNNER_TASK_STACK_SIZE,
+            NULL,
+            tskIDLE_PRIORITY,
+            NULL );
 }
 
 /*-----------------------------------------------------------*/
@@ -524,11 +527,7 @@ void vApplicationGetTimerTaskMemory( StaticTask_t ** ppxTimerTaskTCBBuffer,
  */
 void vApplicationMallocFailedHook()
 {
-    taskDISABLE_INTERRUPTS();
-
-    for( ; ; )
-    {
-    }
+    configPRINTF( ( "ERROR: Malloc failed to allocate memory\r\n" ) );
 }
 /*-----------------------------------------------------------*/
 
