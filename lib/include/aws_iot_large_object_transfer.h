@@ -41,7 +41,6 @@ typedef enum AwsIotLargeObjectTransferStatus
     eAwsIotLargeObjectTransferInProgress,//!< eAwsIotLargeObjectTransferInProgress
     eAwsIotLargeObjectTransferFailed,    //!< eAwsIotLargeObjectTransferFailed
     eAwsIotLargeObjectTransferComplete   //!< eAwsIotLargeObjectTransferComplete
-
 } AwsIotLargeObjectTransferStatus_t;
 
 /**
@@ -52,7 +51,7 @@ typedef enum AwsIotLargeObjectTransferError
     AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS = 0,
     AWS_IOT_LARGE_OBJECT_TRANSFER_NO_MEMORY,
     AWS_IOT_LARGE_OBJECT_TRANSFER_MAX_SESSIONS_REACHED,
-    AWS_IOT_LARGE_OBJECT_TRANSFER_INVALID_NETWORK_PARAMS,
+    AWS_IOT_LARGE_OBJECT_TRANSFER_INVALID_PARAMS,
     AWS_IOT_LARGE_OBJECT_TRANSFER_NETWORK_ERROR,
     AWS_IOT_LARGE_OBJECT_TRANSFER_TIMED_OUT,
     AWS_IOT_LARGE_OBJECT_TRANSFER_EXPIRED
@@ -98,19 +97,19 @@ typedef struct AwsIotLargeObjectTransferNetwork
     void *pvNetworkConnection;
 
     /** Function pointer to send data over a network connection **/
-    typedef size_t ( * AwsIotLargeObjectTransferSendCallback_t )(
+    typedef size_t ( * send )(
             void * pvConnection,
             const void * const pvMessage ,
             size_t xLength );
 
     /** Function pointer to set the network receive callback **/
-    typedef int32_t ( * AwsIotLargeObjectTransferSetReceiveCallback_t )(
+    typedef int32_t ( * setReceiveCallback )(
             void * pvNetworkConnection,
             void* pvRecvContext,
             AwsIotLargeObjectTransferReceiveCallback_t xNetworkReceiveCb );
 
     /** Function pointers to get the network params used **/
-    typedef void ( *AwsIotLargeObjectTransferGetParams_t )(
+    typedef BaseType_t ( *getParams )(
             AwsIotLargeObjectTransferParams_t* pxParams );
 
 } AwsIotLargeObjectTransferNetwork_t;
@@ -129,11 +128,13 @@ typedef void ( *AwsIotLargeObjectTransferCallback_t )(
 
 /**
  * @brief Callback invoked for each of the blocks of large object received.
- * Callback will be invoked multiple
+ * Callback will be invoked multiple times with the offset within the large object,
+ * data, and the length of the data.
  */
 typedef void ( *AwsIotLargeObjectDataReceiveCallback_t ) (
         AwsIotLargeObjectTransferSession_t xSession,
-        const uint8_t *xData,
+        size_t xOffset,
+        const uint8_t *pucData,
         size_t xDataLength );
 
 /**

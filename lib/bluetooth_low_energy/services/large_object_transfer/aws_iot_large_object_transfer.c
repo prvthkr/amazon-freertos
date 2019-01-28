@@ -34,6 +34,11 @@
 #include <stddef.h>
 #include <stdlib.h>
 
+/* Build using a config header, if provided. */
+#ifdef AWS_IOT_CONFIG_FILE
+    #include AWS_IOT_CONFIG_FILE
+#endif
+
 /*
  * FreeRTOS includes.
  */
@@ -41,7 +46,12 @@
 #include "timers.h"
 #include "aws_iot_large_object_transfer.h"
 
-#define _START_BLOCK                                            ( 0 )
+
+#define _MAX_LARGE_OBJECT_SEND_SESSIONS                         ( 1 )
+
+#define _MAX_LARGE_OBJECT_RECV_SESSIONS                         ( 1 )
+
+#define _BLOCK_NUMBER_MIN                                       ( 0 )
 
 /*
  * Maximum block number  should be twice the window size to avoid receiver
@@ -50,60 +60,255 @@
 #define _BLOCK_NUMBER_MAX( windowSize )                         ( 2 * windowSize )
 
 /*
- * Block number wraps to zero after reaching _BLOCK_NUMBER_MAX - 1.
- */
-#define _NEXT_BLOCK_NUMBER( blockNumber, maxBlockNumber )       ( ( blockNumber + 1 ) % maxBlockNumber )
-
-/*
  * Does a round up conversion of number of bits to number of bytes.
  */
-#define _NUM_BITS_TO_BYTES( numBits )                          (  ( ( size_t ) numBits + 7 ) >> 3 )
+#define _BITS_TO_BYTES( numBits )                          (  ( ( size_t ) numBits + 7 ) >> 3 )
 /*
  *
- * Bitmap used to represent the missing block numbers in a window.
+ * Size of Bitmap used to represent the missing block numbers in a window.
  */
-#define _BITMAP_SIZE_NUM_BYTES( windowSize )                   ( _NUM_BITS_TO_BYTES( _BLOCK_NUMBER_MAX( windowSize ) )
+#define _BITMAP_SIZE( windowSize )                   ( _BITS_TO_BYTES( _BLOCK_NUMBER_MAX( windowSize ) ) )
 
+#define _SESSION_ID( pucBlock )                      ( *( ( uint16_t ) pucBuffer ) )
 
-typedef enum
+#define _BLOCK_NUMBER( pucBlock )                    ( *( ( uint16_t ) ( pucBuffer + 2 ) ) )
+
+#define _FLAGS( pucBlock )                           ( *( ( uint8_t ) ( pucBuffer +  4 ) ) )
+
+#define _BLOCK_DATA( pucBlock )                      ( *( ( uint8_t ) ( pucBuffer +  4 ) ) )
+
+#define _MAX_BLOCK_DATA_LEN( usMTU )                 ( ( usMTU - 5 ) )
+
+#define _BLOCK_LEN( xDataLen )                       ( ( xDataLen + 5 ))
+
+typedef struct _largeObjectTransferBitMap
 {
-   eAwsIotLargeObjectSessionReceive = 0,
-   eAwsIotLargeObjectSessionSend
-} _largeObjectSessionType_t;
+    uint16_t usSize;
+    union {
+        uint8_t ucValue[4];
+        uint8_t* pucPtr;
+    } data;
+} _largeObjectTransferBitMap_t;
+
 
 typedef struct _largeObjectSendSession
 {
-    AwsIotLargeObjectTransferCallback_t xCallback;
     const uint8_t *pucObject;
     size_t xOffset;
     size_t xSize;
-    uint16_t usNextBlock;
+    uint16_t usBlockNumber;
+    uint16_t usBlockSize;
+    uint16_t usWindowSize;
     uint16_t usMaxBlocks;
     TimerHandle_t xAckReceivedTimer;
 } _largeObjectSendSession_t;
 
 typedef struct _largeObjectReceiveSession
 {
-    AwsIotLargeObjectTransferCallback_t xCallback;
     AwsIotLargeObjectDataReceiveCallback_t xDataCallback;
     size_t xOffset;
     uint8_t *pucData;
     size_t xLength;
     uint16_t usMaxBlocks;
-    uint8_t *pucBitmap;
+    _largeObjectTransferBitMap_t xBitMap;
     TimerHandle_t xAckSendTimer;
 } _largeObjectReceiveSession_t;
 
 typedef struct _largeObjectSessionInternal
 {
-    _largeObjectSessionType_t xType;
     AwsIotLargeObjectTransferNetwork_t xNetwork;
-    uint16_t usIdentifier;
-
+    uint16_t usUUID;
     union {
         _largeObjectSendSession_t xSend;
         _largeObjectReceiveSession_t xReceive;
     } session;
-
+    AwsIotLargeObjectTransferCallback_t xCallback;
+    AwsIotLargeObjectTransferStatus_t xStatus;
+    BaseType_t xUsed;
 } _largeObjectSessionInternal_t;
 
+_largeObjectSessionInternal_t xSendSessions[ _MAX_LARGE_OBJECT_SEND_SESSIONS ] = { 0 };
+_largeObjectSessionInternal_t xRecieveSessions[ _MAX_LARGE_OBJECT_RECV_SESSIONS ] = { 0 };
+
+AwsIotLargeObjectTransferError_t prxSendBlock(
+        AwsIotLargeObjectTransferNetwork_t* pxNetwork,
+        const uint8_t *pucBlockData,
+        size_t xDataLength,
+        BaseType_t xLastBlock )
+
+{
+    size_t xBlockLength = _BLOCK_LEN( xDataLength );
+    size_t xSent;
+    uint8_t* pucBlock = NULL;
+    AwsIotLargeObjectTransferError_t xError = AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS;
+
+    pucBlock = AwsIotNetwork_Malloc( xBlockLength );
+    if( pucBlock != NULL )
+    {
+        xSent = pxNetwork->send( pxNetwork->pvNetworkConnection,
+                             ( const void * ) pucBlockData,
+                             xBlockLength );
+        if( xSent < xBlockLength )
+        {
+            xError = AWS_IOT_LARGE_OBJECT_TRANSFER_NETWORK_ERROR;
+        }
+        AwsIotNetwork_Free( pucBlock );
+    }
+    else
+    {
+        xError = AWS_IOT_LARGE_OBJECT_TRANSFER_NO_MEMORY;
+    }
+
+    return xError;
+
+}
+
+
+AwsIotLargeObjectTransferError_t prxSendWindow( AwsIotLargeObjectTransferNetwork_t* pxNetwork, _largeObjectSendSession_t *pxSendSession )
+{
+    size_t xOffset, xLength;
+    uint16_t ulIndex, ulBlockNum ;
+    AwsIotLargeObjectTransferError_t xError = AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS;
+    uint8_t *pucBlock;
+    BaseType_t xLastBlock = pdFALSE;
+
+    for ( ulIndex = 0; ( ulIndex < pxSendSession->usWindowSize ) && ( !xLastBlock ); ulIndex++ )
+    {
+        ulBlockNum = ( pxSendSession->usBlockNumber + ulIndex );
+        xOffset = pxSendSession->xOffset + ( ulBlockNum * pxSendSession->usBlockSize );
+        xLength = pxSendSession->usBlockSize;
+        if( ( xOffset + xLength ) >= pxSendSession->xSize )
+        {
+            xLength = ( pxSendSession->xSize - xOffset );
+            xLastBlock = pdTRUE;
+        }
+        pucBlock = ( pxSendSession->pucObject + xOffset );
+        xError = prxSendBlock( pxNetwork, pucBlock, xLength, xLastBlock );
+        if( xError != AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS )
+        {
+            break;
+        }
+    }
+
+    return xError;
+}
+
+BaseType_t prxIsValueSet( const uint8_t *pucBitMap, uint16_t ulValue )
+{
+    BaseType_t xRet = pdFALSE;
+    uint16_t ulIdx = ( ulValue >> 3 ); /* Divide by 8 */
+    uint16_t ulPos =
+
+
+    return xRet;
+}
+
+AwsIotLargeObjectTransferError_t prxRetransmitMissingBlocks(
+        AwsIotLargeObjectTransferNetwork_t* pxNetwork,
+        _largeObjectSendSession_t *pxSendSession,
+        const uint8_t *pucBitMap,
+        size_t xBitMapLength )
+{
+    size_t xOffset, xLength;
+    uint16_t ulIndex, ulBlockNum ;
+    AwsIotLargeObjectTransferError_t xError = AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS;
+    uint8_t *pucBlock;
+    BaseType_t xLastBlock = pdFALSE;
+
+    if( xBitMapLength == _BITMAP_SIZE( pxSendSession->usWindowSize ) )
+    {
+        for ( ulIndex = 0; ( ulIndex < pxSendSession->usWindowSize ) && ( !xLastBlock ); ulIndex++ )
+        {
+            ulBlockNum = ( pxSendSession->usBlockNumber + ulIndex );
+            if( prxIsValueSet( pucBitMap, ulBlockNum ) == pdTRUE )
+            {
+                xOffset = pxSendSession->xOffset + ( ulBlockNum * pxSendSession->usBlockSize );
+                xLength = pxSendSession->usBlockSize;
+                if( ( xOffset + xLength ) >= pxSendSession->xSize )
+                {
+                    xLength = ( pxSendSession->xSize - xOffset );
+                    xLastBlock = pdTRUE;
+                }
+                pucBlock = ( pxSendSession->pucObject + xOffset );
+                xError = prxSendBlock( pxNetwork, pucBlock, xLength, xLastBlock );
+                if( xError != AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS )
+                {
+                    break;
+                }
+            }
+        }
+    }
+
+    return xError;
+}
+
+AwsIotLargeObjectTransferError_t prxInitiateLargeObjectTransfer( _largeObjectSessionInternal_t *pxSession )
+{
+    AwsIotLargeObjectTransferError_t xError = AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS;
+    AwsIotLargeObjectTransferParams_t xParams = { 0 };
+    BaseType_t xRet = pdFALSE;
+    _largeObjectSendSession_t *pxSendSession;
+
+    xRet = pxSession->xNetwork.getParams( &xParams );
+    if( xRet == pdTRUE )
+    {
+        pxSendSession = &pxSession->session.xSend;
+        pxSendSession->usBlockNumber = _BLOCK_NUMBER_MIN;
+        pxSendSession->usMaxBlocks = _BLOCK_NUMBER_MAX( xParams.windowSize );
+        pxSendSession->usWindowSize = xParams.windowSize;
+        pxSendSession->usBlockSize = _MAX_BLOCK_DATA_LEN( xParams.usMTU );
+        pxSendSession->xOffset = 0;
+    }
+    else
+    {
+        xError = AWS_IOT_LARGE_OBJECT_TRANSFER_INVALID_PARAMS;
+    }
+
+    if( xError == AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS )
+    {
+        xError = prxSendWindow( &pxSession->xNetwork, pxSendSession );
+    }
+
+    return xError;
+}
+
+AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Send(
+        AwsIotLargeObjectTransferNetwork_t* pxNetwork,
+        AwsIotLargeObjectTransferSession_t* pxSession,
+        const uint8_t* pucObject,
+        size_t xSize,
+        AwsIotLargeObjectTransferCallback_t xSendCallback )
+{
+    AwsIotLargeObjectTransferError_t xError = AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS;
+    _largeObjectSessionInternal_t *pxInternalSession;
+    uint32_t ulIndex;
+
+    for( ulIndex = 0; ulIndex < _MAX_LARGE_OBJECT_SEND_SESSIONS; ulIndex++ )
+    {
+        if( xSendSessions[ ulIndex ].xUsed == pdFALSE )
+        {
+            pxInternalSession = &xSendSessions[ ulIndex ];
+            pxInternalSession->xUsed = pdTRUE;
+            pxInternalSession->xNetwork = *pxNetwork;
+            pxInternalSession->session.xSend.pucObject = pucObject;
+            pxInternalSession->session.xSend.xSize = xSize;
+            pxInternalSession->xCallback = xSendCallback;
+
+            xError = prxInitiateLargeObjectTransfer( pxInternalSession );
+            if( xError == AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS )
+            {
+                ( *pxSession ) = ( AwsIotLargeObjectTransferSession_t ) pxInternalSession;
+            }
+
+            break;
+        }
+    }
+
+    if( ulIndex == _MAX_LARGE_OBJECT_SEND_SESSIONS )
+    {
+        xError = AWS_IOT_LARGE_OBJECT_TRANSFER_MAX_SESSIONS_REACHED;
+
+    }
+
+    return xError;
+}
