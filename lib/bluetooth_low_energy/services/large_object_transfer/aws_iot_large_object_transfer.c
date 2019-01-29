@@ -69,13 +69,13 @@
  */
 #define _BITMAP_SIZE( windowSize )                   ( _BITS_TO_BYTES( _BLOCK_NUMBER_MAX( windowSize ) ) )
 
-#define _SESSION_ID( pucBlock )                      ( *( ( uint16_t ) pucBuffer ) )
+#define _SESSION_ID( pucBlock )                      ( *( ( uint16_t ) pucBlock ) )
 
-#define _BLOCK_NUMBER( pucBlock )                    ( *( ( uint16_t ) ( pucBuffer + 2 ) ) )
+#define _BLOCK_NUMBER( pucBlock )                    ( *( ( uint16_t ) ( pucBlock + 2 ) ) )
 
-#define _FLAGS( pucBlock )                           ( *( ( uint8_t ) ( pucBuffer +  4 ) ) )
+#define _FLAGS( pucBlock )                           ( *( ( uint8_t ) ( pucBlock +  4 ) ) )
 
-#define _BLOCK_DATA( pucBlock )                      ( *( ( uint8_t ) ( pucBuffer +  4 ) ) )
+#define _BLOCK_DATA( pucBlock )                      ( *( ( uint8_t ) ( pucBlock +  4 ) ) )
 
 #define _MAX_BLOCK_DATA_LEN( usMTU )                 ( ( usMTU - 5 ) )
 
@@ -100,7 +100,8 @@ typedef struct _largeObjectSendSession
     uint16_t usBlockSize;
     uint16_t usWindowSize;
     uint16_t usMaxBlocks;
-    TimerHandle_t xAckReceivedTimer;
+    uint16_t usNumRetries;
+    TimerHandle_t xRetransmitTimer;
 } _largeObjectSendSession_t;
 
 typedef struct _largeObjectReceiveSession
@@ -110,21 +111,22 @@ typedef struct _largeObjectReceiveSession
     uint8_t *pucData;
     size_t xLength;
     uint16_t usMaxBlocks;
+    uint16_t usNumRetries;
     _largeObjectTransferBitMap_t xBitMap;
-    TimerHandle_t xAckSendTimer;
+    TimerHandle_t xAckTimer;
 } _largeObjectReceiveSession_t;
 
 typedef struct _largeObjectSessionInternal
 {
-    AwsIotLargeObjectTransferNetwork_t xNetwork;
+    BaseType_t xUsed;
     uint16_t usUUID;
+    AwsIotLargeObjectTransferNetwork_t xNetwork;
+    AwsIotLargeObjectTransferCallback_t xCallback;
+    AwsIotLargeObjectTransferStatus_t xStatus;
     union {
         _largeObjectSendSession_t xSend;
         _largeObjectReceiveSession_t xReceive;
     } session;
-    AwsIotLargeObjectTransferCallback_t xCallback;
-    AwsIotLargeObjectTransferStatus_t xStatus;
-    BaseType_t xUsed;
 } _largeObjectSessionInternal_t;
 
 _largeObjectSessionInternal_t xSendSessions[ _MAX_LARGE_OBJECT_SEND_SESSIONS ] = { 0 };
@@ -196,9 +198,13 @@ AwsIotLargeObjectTransferError_t prxSendWindow( AwsIotLargeObjectTransferNetwork
 BaseType_t prxIsValueSet( const uint8_t *pucBitMap, uint16_t ulValue )
 {
     BaseType_t xRet = pdFALSE;
-    uint16_t ulIdx = ( ulValue >> 3 ); /* Divide by 8 */
-    uint16_t ulPos =
+    uint16_t ulIndex = ( ulValue >> 3 ); /* Divide by 8 */
+    uint16_t ulPos   = ( ulValue & 0x7 );
 
+    if( pucBitMap[ ulIndex ] & ( 0x1 << ulPos ) )
+    {
+        xRet = pdTRUE;
+    }
 
     return xRet;
 }
@@ -238,8 +244,45 @@ AwsIotLargeObjectTransferError_t prxRetransmitMissingBlocks(
             }
         }
     }
+    else
+    {
+        xError = AWS_IOT_LARGE_OBJECT_TRANSFER_INVALID_PARAMS;
+    }
 
     return xError;
+}
+
+void prvRetransmitWindow( TimerHandle_t xTimer )
+{
+    _largeObjectSessionInternal_t *pxSession;
+    _largeObjectSendSession_t* pxSendSession;
+    BaseType_t xResult;
+
+    pxSession = ( _largeObjectSessionInternal_t * ) pvTimerGetTimerID( xTimer );
+    configASSERT( pxSession != NULL );
+    pxSendSession = &( pxSession->session.xSend );
+
+    if( pxSendSession->usNumRetries > 0 )
+    {
+         if( prxSendWindow( &pxSession->xNetwork, pxSendSession ) == pdFALSE )
+         {
+             configPRINTF(( "Failed to retransmit window, session = %d\n", pxSession->usUUID ));
+             pxSession->xStatus = eAwsIotLargeObjectTransferFailed;
+         }
+         else
+         {
+             pxSendSession->usNumRetries--;
+             if( xTimerStart( xTimer, 0 ) == pdFALSE )
+             {
+                 configPRINTF(( "Failed to create retransmit timer, session = %d\n", pxSession->usUUID ));
+                 pxSession->xStatus = eAwsIotLargeObjectTransferFailed;
+             }
+         }
+    }
+    else
+    {
+        pxSession->xStatus = eAwsIotLargeObjectTransferFailed;
+    }
 }
 
 AwsIotLargeObjectTransferError_t prxInitiateLargeObjectTransfer( _largeObjectSessionInternal_t *pxSession )
@@ -253,11 +296,25 @@ AwsIotLargeObjectTransferError_t prxInitiateLargeObjectTransfer( _largeObjectSes
     if( xRet == pdTRUE )
     {
         pxSendSession = &pxSession->session.xSend;
+        pxSendSession->xOffset = 0;
         pxSendSession->usBlockNumber = _BLOCK_NUMBER_MIN;
         pxSendSession->usMaxBlocks = _BLOCK_NUMBER_MAX( xParams.windowSize );
         pxSendSession->usWindowSize = xParams.windowSize;
         pxSendSession->usBlockSize = _MAX_BLOCK_DATA_LEN( xParams.usMTU );
-        pxSendSession->xOffset = 0;
+        pxSendSession->usNumRetries = xParams.numRetransmissions;
+
+        pxSendSession->xRetransmitTimer = xTimerCreate(
+                "LoTRetransmitTimer",
+                pd_MS_TO_TICKS( xParams.timeoutMilliseconds * 2 ),
+                pdFALSE,
+                (pxSession),
+                prvRetransmitWindow );
+
+        if( pxSendSession->xRetransmitTimer == NULL )
+        {
+            xError =  AWS_IOT_LARGE_OBJECT_TRANSFER_INTERNAL_ERROR;
+        }
+
     }
     else
     {
@@ -269,7 +326,27 @@ AwsIotLargeObjectTransferError_t prxInitiateLargeObjectTransfer( _largeObjectSes
         xError = prxSendWindow( &pxSession->xNetwork, pxSendSession );
     }
 
+    if( xError == AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS )
+    {
+        if( xTimerStart( pxSendSession->xRetransmitTimer, 0 ) == pdFALSE )
+        {
+            xError = AWS_IOT_LARGE_OBJECT_TRANSFER_INTERNAL_ERROR;
+        }
+    }
+
     return xError;
+}
+
+void vLargeObjectNetworkReceiveCallback(
+        void * pvContext,
+        const void * pvReceivedData,
+        size_t xDataLength )
+{
+   uint8_t *pucBlock = ( const uint8_t * ) pvReceivedData;
+   configASSERT( pvReceivedData != NULL );
+   uint16_t usUUID = _SESSION_ID( pucBlock );
+   uint16_t usBlockNumber = _BLOCK_NUMBER( pucBlock );
+
 }
 
 AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Send(
@@ -293,7 +370,6 @@ AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Send(
             pxInternalSession->session.xSend.pucObject = pucObject;
             pxInternalSession->session.xSend.xSize = xSize;
             pxInternalSession->xCallback = xSendCallback;
-
             xError = prxInitiateLargeObjectTransfer( pxInternalSession );
             if( xError == AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS )
             {
