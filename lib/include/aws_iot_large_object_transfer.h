@@ -51,7 +51,7 @@ typedef enum AwsIotLargeObjectTransferError
     AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS = 0,
     AWS_IOT_LARGE_OBJECT_TRANSFER_NO_MEMORY,
     AWS_IOT_LARGE_OBJECT_TRANSFER_MAX_SESSIONS_REACHED,
-    AWS_IOT_LARGE_OBJECT_TRANSFER_INVALID_PARAMS,
+    AWS_IOT_LARGE_OBJECT_TRANSFER_INVALID_PACKET,
     AWS_IOT_LARGE_OBJECT_TRANSFER_NETWORK_ERROR,
     AWS_IOT_LARGE_OBJECT_TRANSFER_TIMED_OUT,
     AWS_IOT_LARGE_OBJECT_TRANSFER_EXPIRED,
@@ -121,6 +121,7 @@ typedef struct _windowBitMap
 
 typedef struct _largeObjectSendSession
 {
+    uint16_t usUUID;
     size_t xOffset;
     uint16_t usWindowSize;
     uint16_t usBlockSize;
@@ -136,6 +137,7 @@ typedef struct _largeObjectSendSession
 
 typedef struct _largeObjectRecvSession
 {
+    uint16_t usUUID;
     size_t xOffset;
     uint16_t usWindowSize;
     uint16_t usBlockSize;
@@ -148,7 +150,7 @@ typedef struct _largeObjectRecvSession
 
 typedef struct AwsIotLargeObjectTransferSession
 {
-    uint16_t usUUID;
+
     AwsIotLargeObjectTransferStatus_t xState;
     AwsIotLargeObjectTransferNetwork_t *pxNetwork;
     AwsIotLargeObjectTransferType_t xType;
