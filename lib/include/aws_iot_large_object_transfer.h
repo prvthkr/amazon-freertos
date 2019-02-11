@@ -37,7 +37,7 @@
  */
 typedef enum AwsIotLargeObjectTransferStatus
 {
-    eAwsIotLargeObjectTransferStart = 0, //!< eAwsIotLargeObjectTransferStart
+    eAwsIotLargeObjectTransferInit = 0,
     eAwsIotLargeObjectTransferInProgress,//!< eAwsIotLargeObjectTransferInProgress
     eAwsIotLargeObjectTransferFailed,    //!< eAwsIotLargeObjectTransferFailed
     eAwsIotLargeObjectTransferComplete   //!< eAwsIotLargeObjectTransferComplete
@@ -58,12 +58,12 @@ typedef enum AwsIotLargeObjectTransferError
     AWS_IOT_LARGE_OBJECT_TRANSFER_INTERNAL_ERROR
 } AwsIotLargeObjectTransferError_t;
 
-/**
- * @brief Maximum window size supported for large object transfer.
- */
-#define largeObjectTransferMAX_WINDOW_SIZE        ( 32768 )
+typedef enum AwsIotLargeObjectTransferType
+{
+    AWS_IOT_LARGE_OBJECT_SESSION_SEND = 0,
+    AWS_IOT_LARGE_OBJECT_SESSION_RECIEVE
+} AwsIotLargeObjectTransferType_t;
 
-#define largeObjectTransferMAX_SESSIONS           ( 65535 )
 /**
  * @brief Network parameters negotiated for large object transfer.
  */
@@ -77,6 +77,8 @@ typedef struct AwsIotLargeObjectTransferParams
 
 } AwsIotLargeObjectTransferParams_t;
 
+
+
 /**
  * @brief Callback used to receive bytes of maximum MTU size from a physical network.
  * Returns pdFALSE if message is incomplete. Caller needs to invoke the function again with the complete message.
@@ -88,44 +90,110 @@ typedef void( * AwsIotLargeObjectTransferReceiveCallback_t ) (
         const void * pvReceivedData,
         size_t xDataLength );
 
-/**
- * @brief Structure which wraps the underlying network stack for the large object transfer.
- * Structure contains the open network connection used to send/receive data, the function pointers to set
- * a receive callback and send data over the network connection.
- */
 typedef struct AwsIotLargeObjectTransferNetwork
 {
-    void *pvNetworkConnection;
+    /** Pointer to a connection object **/
+    void *pvConnection;
 
-    /** Function pointer to send data over a network connection **/
+    /** Function pointer to send data over a connection **/
     typedef size_t ( * send )(
             void * pvConnection,
             const void * const pvMessage ,
             size_t xLength );
 
-    /** Function pointer to set the network receive callback **/
+    /** Function pointer to set the receive callback for a connection **/
     typedef int32_t ( * setReceiveCallback )(
-            void * pvNetworkConnection,
-            void* pvRecvContext,
-            AwsIotLargeObjectTransferReceiveCallback_t xNetworkReceiveCb );
-
-    /** Function pointers to get the network params used **/
-    typedef BaseType_t ( *getParams )(
-            AwsIotLargeObjectTransferParams_t* pxParams );
+            void * pvConnection,
+            void* pvContext,
+            AwsIotLargeObjectTransferReceiveCallback_t );
 
 } AwsIotLargeObjectTransferNetwork_t;
 
-/**
- * @brief Type represents unique handle to a large object transfer session.
- */
-typedef void *AwsIotLargeObjectTransferSession_t;
+
+typedef struct _windowBitMap
+{
+    uint16_t usSize;
+    union {
+        uint8_t ucValue[4];
+        uint8_t* pucPtr;
+    } data;
+} _windowBitMap_t;
+
+typedef struct _largeObjectSendSession
+{
+    size_t xOffset;
+    uint16_t usWindowSize;
+    uint16_t usBlockSize;
+    uint16_t usBlockNum;
+    uint16_t usRetriesLeft;
+    uint16_t usNumRetries;
+    TimerHandle_t xRetransmitTimer;
+    uint8_t *pucData;
+    size_t xDataLength;
+
+} _largeObjectSendSession_t;
+
+
+typedef struct _largeObjectRecvSession
+{
+    size_t xOffset;
+    uint16_t usWindowSize;
+    uint16_t usBlockSize;
+    _windowBitMap_t xBlockSReceived;
+    uint16_t usRetriesLeft;
+    uint16_t usNumRetries;
+    TimerHandle_t xAckTimer;
+    AwsIotLargeObjectDataReceiveCallback_t xDataCallback;
+} _largeObjectRecvSession_t;
+
+typedef struct AwsIotLargeObjectTransferSession
+{
+    uint16_t usUUID;
+    AwsIotLargeObjectTransferStatus_t xState;
+    AwsIotLargeObjectTransferNetwork_t *pxNetwork;
+    AwsIotLargeObjectTransferType_t xType;
+
+    union {
+        _largeObjectSendSession_t xSend;
+        _largeObjectRecvSession_t xReceive;
+    } session;
+
+} AwsIotLargeObjectTransferSession_t;
+
+
 
 /**
  * @brief Callback used to receive events from large object transfer.
  */
 typedef void ( *AwsIotLargeObjectTransferCallback_t )(
-        AwsIotLargeObjectTransferSession_t xSession,
+        AwsIotLargeObjectTransferSession_t* pxSession,
         AwsIotLargeObjectTransferStatus_t xStatus );
+
+
+
+/**
+ * @brief Structure which wraps the underlying context for the large object transfer sessions.
+ * Context should be created before creating all large object sessions and destroyed only when all the sessions are completed.
+ */
+typedef struct AwsIotLargeObjectTransferContext
+{
+
+    AwsIotLargeObjectTransferNetwork_t xNetwork;
+
+    /** Parameters used for large object transfer **/
+    AwsIotLargeObjectTransferParams_t xParameters;
+
+    /** Callback used to receive events on large object transfer sessions. **/
+    AwsIotLargeObjectTransferCallback_t xCallback;
+
+    /** Total number of sessions **/
+    uint16_t usNumSessions;
+
+    /** Array that holds the large object transfer sessions **/
+    AwsIotLargeObjectTransferSession_t* pxSessions;
+
+} AwsIotLargeObjectTransferContext_t;
+
 
 /**
  * @brief Callback invoked for each of the blocks of large object received.
@@ -133,21 +201,25 @@ typedef void ( *AwsIotLargeObjectTransferCallback_t )(
  * data, and the length of the data.
  */
 typedef void ( *AwsIotLargeObjectDataReceiveCallback_t ) (
-        AwsIotLargeObjectTransferSession_t xSession,
         size_t xOffset,
         const uint8_t *pucData,
         size_t xDataLength );
+
+/**
+ * @brief Destroys the resources for a context.
+ * Frees the resources associated with the context. All Sessions should be aborted, completed or failed state.
+ */
+AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Init( AwsIotLargeObjectTransferContext_t* pxContext );
 
 /**
  * @brief Initiates sending a large object to a peer.
  * Initiates transfer of a large object by sending START message to the peer.
  */
 AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Send(
-        AwsIotLargeObjectTransferNetwork_t* pxNetwork,
-        AwsIotLargeObjectTransferSession_t* pxSession,
+        AwsIotLargeObjectTransferContext_t* pxContext,
         const uint8_t* pucObject,
         size_t xSize,
-        AwsIotLargeObjectTransferCallback_t xSendCallback );
+        AwsIotLargeObjectTransferSession_t** pxSession );
 
 /**
  * @brief API invoked by the application to indicate its ready to receive a large object.
@@ -155,28 +227,26 @@ AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Send(
  * handled by the application using the receive data callback.
  */
 AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_SetReceiveCallback(
-        AwsIotLargeObjectTransferNetwork_t* pxNetwork,
-        AwsIotLargeObjectTransferCallback_t xRecvCallback,
+        AwsIotLargeObjectTransferContext_t* pxContext,
+        AwsIotLargeObjectTransferSession_t* pxSession,
         AwsIotLargeObjectDataReceiveCallback_t xDataCallback );
 /**
  * @brief Resumes a large object transfer session.
  * Only Sender can resume a previously timedout session. Failed or Aborted sessions cannot be resumed.
  *
  */
-AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Reconnect(
-        AwsIotLargeObjectTransferSession_t xSession,
-        AwsIotLargeObjectTransferNetwork_t* pxNetwork );
+AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Reconnect( AwsIotLargeObjectTransferSession_t* pxSession );
 
 /**
  * @brief Aborts a large object transfer session.
  * Aborts an ongoing large object transfer session. Both receiver and sender can abort a large object transfer sesssion.
  */
-AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Abort( AwsIotLargeObjectTransferSession_t xSession );
+AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Abort( AwsIotLargeObjectTransferSession_t* pxSession );
 
 /**
- * @brief Destroys the handle to a Large Object Transfer session.
- * Frees the resources associated with the session. Session should be aborted, completed or failed state.
+ * @brief Destroys the resources for a context.
+ * Frees the resources associated with the context. All Sessions should be aborted, completed or failed state.
  */
-AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Destroy( AwsIotLargeObjectTransferSession_t xSession );
+AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Destroy( AwsIotLargeObjectTransferContext_t* pxContext );
 
 #endif /* AWS_IOT_LARGE_OBJECT_TRANSFER_H_ */
