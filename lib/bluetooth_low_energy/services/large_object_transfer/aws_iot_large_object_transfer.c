@@ -92,7 +92,9 @@
 
 #define _ERROR_CODE( pucACK )                        ( * ( ( uint8_t * ) ( pucACK + 2 ) ) )
 
-#define _BITMAP_LEN( xACKLen )                       ( ( uint8_t * ) ( xACKLen - 3 ) )
+#define _BITMAP_LEN( xACKLen )                       ( xACKLen - 3 )
+
+#define _ACK_LENGTH( xBitMapLen )                       ( xBitMapLen + 3 )
 
 #define _SESSION_FREE( xState )                      ( ( xState == eAwsIotLargeObjectTransferInit ) || ( xState == eAwsIotLargeObjectTransferComplete ) )
 
@@ -151,10 +153,35 @@ AwsIotLargeObjectTransferError_t prxSendBlock(
     return xError;
 }
 
-static void prvSendACK()
+static AwsIotLargeObjectTransferError_t prvSendACK(
+        AwsIotLargeObjectTransferNetworkIface_t* pxNetwork,
+        uint16_t usSessionId,
+        AwsIotLargeObjectTransferError_t xError,
+        const uint8_t *pucBitMap,
+        size_t xBitMapLength )
 {
-    /** TODO: To be implemented **/
+    uint8_t *pucAck = NULL;
+    size_t xAckLength = _ACK_LENGTH( xBitMapLength );
+    size_t xSent;
 
+    pucAck = AwsIotNetwork_Malloc( xAckLength );
+    if( pucAck != NULL )
+    {
+        _SESSION_ID( pucAck ) = usSessionId;
+        _ERROR_CODE( pucAck ) = ( uint8_t ) xError;
+        memcpy( _BITMAP( pucAck ), pucBitMap, xBitMapLength );
+        xSent = pxNetwork->send( pxNetwork->pvConnection,
+                                 pucAck,
+                                 xAckLength );
+        if( xSent < xAckLength )
+        {
+            xError = AWS_IOT_LARGE_OBJECT_TRANSFER_NETWORK_ERROR;
+        }
+
+        AwsIotNetwork_Free( pucAck );
+    }
+
+    return xError;
 }
 
 
@@ -494,12 +521,13 @@ AwsIotLargeObjectTransferError_t prxCreateSendSession(
     pxSession->usBlockSize  = _MAX_BLOCK_DATA_LEN( pxContext->xParameters.usMTU );
     pxSession->usNumRetries = pxContext->xParameters.numRetransmissions;
 
-    pxSession->xRetransmitTimer = xTimerCreate(
-            "RetransmitTimer",
-            pd_MS_TO_TICKS( pxContext->xParameters.timeoutMilliseconds * 2 ),
-            pdFALSE,
-            ( pxSession ),
-            prvRetransmitWindow );
+    pxSession->xRetransmitTimer =
+            xTimerCreate(
+                    "RetransmitTimer",
+                    pd_MS_TO_TICKS( pxContext->xParameters.timeoutMilliseconds * 2 ),
+                    pdFALSE,
+                    ( pxSession ),
+                    prvRetransmitWindow );
 
     if( pxSession->xRetransmitTimer == NULL )
     {
@@ -521,10 +549,15 @@ AwsIotLargeObjectTransferError_t prxCreateSendSession(
     return xError;
 }
 
-AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Init( AwsIotLargeObjectTransferContext_t* pxContext )
+AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Init(
+        AwsIotLargeObjectTransferContext_t* pxContext,
+        uint16_t usNumSendSessions,
+        uint16_t usNumReceiveSessions )
 {
     AwsIotLargeObjectTransferError_t xError = AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS;
     AwsIotLargeObjectTransferNetworkIface_t *pxNetworkIface;
+    uint16_t usIdx, usBufferSize;
+    AwsIotLargeObjectReceiveSession_t* pxRecvSession;
 
     if( pxContext == NULL )
     {
@@ -539,8 +572,54 @@ AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Init( AwsIotLargeObje
                 prvNetworkReceiveCallback );
 
         /** Allocate memory for sessions **/
-        memset(  pxContext->pxSendSessions, 0x00, ( sizeof( AwsIotLargeObjectSession_t ) * pxContext->usNumSendSessions ) );
-        memset(  pxContext->pxRecvSessions, 0x00, ( sizeof( AwsIotLargeObjectSession_t ) * pxContext->usNumRecvSessions ) );
+
+        pxContext->pxSendSessions = AwsIotNetworkMalloc( sizeof( AwsIotLargeObjectSession_t ) * usNumSendSessions );
+        if( pxContext->pxSendSessions != NULL )
+        {
+            memset(  pxContext->pxSendSessions,
+                     0x00,
+                     ( sizeof( AwsIotLargeObjectSession_t ) * usNumSendSessions ) );
+            pxContext->usNumSendSessions = usNumSendSessions;
+        }
+        else
+        {
+            xError = AWS_IOT_LARGE_OBJECT_TRANSFER_NO_MEMORY;
+        }
+
+        if( xError == AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS )
+        {
+            pxContext->pxRecvSessions = AwsIotNetworkMalloc( sizeof( AwsIotLargeObjectSession_t ) * usNumReceiveSessions );
+            if( pxContext->pxRecvSessions != NULL )
+            {
+                memset(  pxContext->pxRecvSessions,
+                         0x00,
+                         ( sizeof( AwsIotLargeObjectSession_t ) * usNumSendSessions ) );
+                pxContext->usNumRecvSessions = usNumReceiveSessions;
+
+                /** Allocate buffer size to hold one window per receive session **/
+                usBufferSize = ( pxContext->xParameters.windowSize * pxContext->xParameters.usMTU );
+
+                for( usIdx = 0; usIdx < usNumReceiveSessions; usIdx++ )
+                {
+                    pxRecvSession = &( pxContext->pxRecvSessions[ usIdx ].xRecv );
+                    pxRecvSession->pucRecvBuffer = AwsIotNetworkMalloc( usBufferSize );
+                    if( pxRecvSession->pucRecvBuffer != NULL )
+                    {
+                        pxRecvSession->xRecvBufLength = usBufferSize;
+                    }
+                    else
+                    {
+                        xError = AWS_IOT_LARGE_OBJECT_TRANSFER_NO_MEMORY;
+                        break;
+
+                    }
+                }
+            }
+            else
+            {
+                xError = AWS_IOT_LARGE_OBJECT_TRANSFER_NO_MEMORY;
+            }
+        }
     }
 
     return xError;
@@ -580,29 +659,28 @@ AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Send(
     return xError;
 }
 
-
 AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Resume( AwsIotLargeObjectTransferContext_t* pxContext, uint16_t usSessionID )
 {
     AwsIotLargeObjectTransferError_t xError = AWS_IOT_LARGE_OBJECT_TRANSFER_INVALID_PARAM;
-    AwsIotLargeObjectSession_t *pxSession;
+    AwsIotLargeObjectSendSession_t *pxSession;
     uint16_t usIndex;
 
 
     for( usIndex = 0; usIndex < pxContext->usNumSendSessions; usIndex++ )
     {
-        pxSession = & ( pxContext->pxSendSessions[ usIndex ]);
-        if( ( pxSession->xSend.usSessionID == usSessionID )
-                && ( pxSession->xSend.xState == eAwsIotLargeObjectTransferFailed ) )
+        pxSession = & ( pxContext->pxSendSessions[ usIndex ].xSend);
+        if( ( pxSession->usSessionID == usSessionID )
+                && ( pxSession->xState != eAwsIotLargeObjectTransferDataSend )
+                && ( pxSession->xOffset < pxSession->xObjectLength ) )
         {
-            xError = prxSendWindow( &pxSession->xSend );
+            xError = prxSendWindow( pxSession );
             if( xError == AWS_IOT_LARGE_OBJECT_TRANSFER_SUCCESS )
             {
-                if( xTimerStart( pxSession->xSend.xRetransmitTimer, 0UL ) != pdPASS )
+                if( xTimerStart( pxSession->xRetransmitTimer, 0UL ) != pdPASS )
                 {
                     xError = AWS_IOT_LARGE_OBJECT_TRANSFER_INTERNAL_ERROR;
                 }
             }
-
         }
     }
 
@@ -611,7 +689,34 @@ AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Resume( AwsIotLargeOb
 
 AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Abort( uint16_t usSessionID )
 {
-
     return AWS_IOT_LARGE_OBJECT_TRANSFER_INTERNAL_ERROR;
 }
 
+void AwsIotLargeObjectTransfer_Destroy( AwsIotLargeObjectTransferContext_t* pxContext )
+{
+    uint16_t usIdx;
+    AwsIotLargeObjectReceiveSession_t *pxRecvSession;
+
+    if( pxContext->pxSendSessions != NULL )
+    {
+        AwsIotNetwork_Free( pxContext->pxSendSessions );
+        pxContext->pxSendSessions = NULL;
+    }
+
+    for( usIdx = 0; usIdx < pxContext->usNumRecvSessions; usIdx++ )
+    {
+        pxRecvSession = &( pxContext->pxRecvSessions->xRecv );
+        if( pxRecvSession->pucRecvBuffer != NULL )
+        {
+            AwsIotNetwork_Free( pxRecvSession->pucRecvBuffer );
+            pxRecvSession->pucRecvBuffer = NULL;
+        }
+    }
+
+    if( pxContext->pxRecvSessions != NULL )
+    {
+        AwsIotNetwork_Free( pxContext->pxRecvSessions );
+        pxContext->pxRecvSessions = NULL;
+    }
+
+}

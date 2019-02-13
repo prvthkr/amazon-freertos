@@ -132,7 +132,6 @@ typedef struct AwsIotLargeObjectSendSession
     uint16_t usRetriesLeft;
     uint16_t usNumRetries;
     TimerHandle_t xRetransmitTimer;
-
 } AwsIotLargeObjectSendSession_t;
 
 typedef void( * AwsIotLargeObjectReceiveCallback_t ) (
@@ -197,7 +196,10 @@ typedef struct AwsIotLargeObjectTransferContext
  * @brief Destroys the resources for a context.
  * Frees the resources associated with the context. All Sessions should be aborted, completed or failed state.
  */
-AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Init( AwsIotLargeObjectTransferContext_t* pxContext );
+AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Init(
+        AwsIotLargeObjectTransferContext_t* pxContext,
+        uint16_t usNumSendSessions,
+        uint16_t usNumReceiveSessions );
 
 /**
  * @brief Initiates sending a large object to a peer.
@@ -226,6 +228,6 @@ AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Abort( uint16_t usSes
  * @brief Destroys the resources for a context.
  * Frees the resources associated with the context. All Sessions should be aborted, completed or failed state.
  */
-AwsIotLargeObjectTransferError_t AwsIotLargeObjectTransfer_Destroy( AwsIotLargeObjectTransferContext_t* pxContext );
+void AwsIotLargeObjectTransfer_Destroy( AwsIotLargeObjectTransferContext_t* pxContext );
 
 #endif /* AWS_IOT_LARGE_OBJECT_TRANSFER_H_ */
